@@ -2,108 +2,110 @@
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  namespace: aa 
-  name: beta-bookapp
+  namespace: air
+  name: canary-airapi4misc
 spec:
   replicas: 1
   selector:
     matchLabels:
-      service: beta-bookapp
+      service: airapi4misc
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: "10%"
+      maxSurge: 10%
       maxUnavailable: 0
-
   minReadySeconds: 30
   template:
     metadata:
       labels:
-        service: beta-bookapp
+        service: airapi4misc
     spec:
       containers:
-      - name: beta-bookapp
-        image: asia.gcr.io/ct-prod-infra/bookapp:796
-        imagePullPolicy: IfNotPresent
-        resources:
-         limits:
-           memory: "8G"
-           cpu: "4"
-         requests:
-           memory: "4G"
-           cpu: "3"
-        
-        env:
-        - name: STARTCMD
-          value: "java -server -Xms1g -Xmx3g -Dct.ctconfig.profilename=prod,gcp,pci -Dct.ctconfig.consul.fetch.base.url=http://ct-config.cltp.com:9001/hq/ct-config/api/resource/fetch -Dct.ctconfig.consul.server=http://${HOST_IP}:8500 -Djava.net.preferIPv4Stack=true -d64 -Dnewrelic.config.distributed_tracing.enabled=true -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=9004 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -XX:+UseG1GC -Dct.common.servertype=bookapp -Dapp.context.path=book -Dspring.profiles.active=prod,gcp,pci -javaagent:/opt/newrelic/newrelic.jar -jar app.war"
+      - env:
         - name: HOST_IP
           valueFrom:
             fieldRef:
+              apiVersion: v1
               fieldPath: status.hostIP
+        - name: STARTCMD
+          value: java -server -XX:+UseParallelOldGC -Xss384k -Xms3g -Xmx3g -d64 -Dct.ctconfig.consul.server=http://$(HOST_IP):8500
+            -Djava.net.preferIPv4Stack=true -XX:ParallelGCThreads=4 -Dnewrelic.config.distributed_tracing.enabled=true
+            -Dlog4j.logging.path=/var/log/tomcat7 -Dct.common.contexts.excludelist=db-context.xml
+            -Dct.common.local.serverid=11 -Dnet.spy.log.LoggerImpl=net.spy.memcached.compat.log.Log4JLogger
+            -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=9004
+            -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false
+            -Dctrel=release1 -Dctport=9080 -Dct.common.servertype=airapi4book -Dapp.context.path=airservice
+            -Dwrapper.java.umask=0002 -Dspring.profiles.active=prod,docker,airapi4book,gcp
+            -javaagent:/opt/newrelic/newrelic.jar -jar app.jar
         - name: FILEBEAT
-          value: "true"
+          value: 'true'
         - name: FILEBEAT_APP_NAME
-          value: "beta-bookapp"
+          value: canary-airapi4misc
         - name: FILEBEAT_APP_TOPIC
-          value: "a2-apps"
+          value: air-search-app
         - name: FILEBEAT_ITI_TOPIC
-          value: "a2-access"
+          value: airsrch-access
         - name: NEW_RELIC_APP_NAME
-          value: "beta-bookapp"
-        - name: FILEBEAT_ACCESS_LOGFILE
-          value: "/opt/cal/logs/access.log"
+          value: canary-airapi4misc
         - name: FILEBEAT_APP_LOGFILE
-          value: "/opt/cal/logs/application.log"
+          value: /var/log/tomcat7/catalina.out
+        - name: FILEBEAT_ACCESS_LOGFILE
+          value: /var/log/tomcat7/access.*.log
+        - name: LASTRESTART
+          value: '200330063604'
+        image: asia.gcr.io/ct-prod-infra/air-service:3613
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: 9080
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          successThreshold: 1
+          timeoutSeconds: 5
+        name: canary-airapi4misc
         ports:
         - containerPort: 9080
+          protocol: TCP
         readinessProbe:
-          tcpSocket:
+          failureThreshold: 3
+          httpGet:
+            path: /airservice/healthcheck
             port: 9080
-          initialDelaySeconds: 60
+            scheme: HTTP
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          successThreshold: 1
           timeoutSeconds: 5
-        readinessProbe:
-          httpGet:
-             path: /book/actuator/health
-             port: 9080
-          initialDelaySeconds: 60
-          timeoutSeconds: 5
-        livenessProbe:
-          httpGet:
-             path: /book/actuator/health
-             port: 9080
-          initialDelaySeconds: 60
-          timeoutSeconds: 5
-          periodSeconds: 60
----
-kind: Service
-apiVersion: v1
-metadata:
-  namespace: aa
-  name: beta-bookapp
-  annotations:
-    cloud.google.com/load-balancer-type: "Internal" 
-spec:
-  type: LoadBalancer
-  selector:
-    service: beta-bookapp
-  loadBalancerIP: 10.163.0.83
-  ports:
-  - protocol: TCP
-    port: 80
-    targetPort: 9080
-
----
-
-apiVersion: autoscaling/v1
-kind: HorizontalPodAutoscaler
-metadata:
-  name: beta-bookapp
-  namespace: aa
-spec:
-  maxReplicas: 1
-  minReplicas: 1
-  scaleTargetRef:
-    apiVersion: extensions/v1beta1
-    kind: Deployment
-    name: beta-bookapp
-  targetCPUUtilizationPercentage: 70
+        resources:
+          limits:
+            cpu: '4'
+            memory: 7G
+          requests:
+            cpu: 500m
+            memory: 4G
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /etc/filebeat/filebeat.yml
+          name: filebeat4air
+          readOnly: true
+          subPath: filebeat.yml
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: cloud.google.com/gke-preemptible
+        operator: Equal
+        value: 'true'
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: filebeat4air
+        name: filebeat4air
